@@ -86,10 +86,15 @@ class LoRa:
 
     def end_packet(self):
         self._write(REG_OP_MODE, MODE_LORA | MODE_TX)
-        while (self._read(REG_IRQ_FLAGS) & IRQ_TX_DONE_MASK) == 0:
-            pass
+
+        # Added return statement, since this seems to read bytes after ending it.
+        end_packet_value = 0
+        while end_packet_value == 0:
+            end_packet_value = self._read(REG_IRQ_FLAGS) & IRQ_TX_DONE_MASK
+        
         self._write(REG_IRQ_FLAGS, IRQ_TX_DONE_MASK)
         gc.collect()
+        return end_packet_value
 
     def write_packet(self, b):
         n = self._read(REG_PAYLOAD_LENGTH)
@@ -106,7 +111,9 @@ class LoRa:
             x = x.encode()
         self.begin_packet()
         self.write_packet(x)
-        self.end_packet()
+
+        ## Added return statement
+        return self.end_packet()
 
     def _get_irq_flags(self):
         f = self._read(REG_IRQ_FLAGS)
@@ -235,6 +242,7 @@ class LoRa:
         gc.collect()
         return bytes(payload)
 
+        
     def _transfer(self, addr, x=0x00):
         resp = bytearray(1)
         self.cs.value(0)

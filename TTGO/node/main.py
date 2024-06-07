@@ -315,6 +315,9 @@ def start_transmissions(_pkts):
         print(".", end='')
         pass
     print("\n")
+
+    # Attempts to start sending packets here, I think
+
     while(_pkts == -1 or i <= _pkts):
         print(i, "----------------------------------------------------")
         chrono.reset()
@@ -333,7 +336,11 @@ def start_transmissions(_pkts):
         on_time = chrono.read_us()
         pkg = struct.pack('BB%dsI' % len(msg), MY_ID, len(msg), en_msg, crc)
         print("Sending a packet of", len(b''.join([int(MY_ID).to_bytes(1, 'big'), int(len(en_msg)).to_bytes(1, 'big'), en_msg, crc.to_bytes(4, 'big')])), "bytes at (ms):", (chrono.read_us()-start)/1000)
-        lora.send(pkg)
+
+        ### DATA TRANSMISSION ###
+        return_pkg = lora.send(pkg)
+        # Think above is accurate
+
         # led.value(0)
         lora.sleep()
         print("Sent:", msg)
