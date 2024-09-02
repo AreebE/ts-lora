@@ -3,8 +3,11 @@
 import socket
 import threading
 import random
+import time
 import hashlib
 import binascii
+import lora_consts as consts
+import lora_methods as lora
 import os
 from Crypto.Cipher import AES
 
@@ -28,39 +31,84 @@ server.listen(5)  # max backlog of connections
 
 print("Listening on:", bind_ip, bind_port)
 
+airtime = lora.airtime_calc(consts.SPREADING_FREQUENCY, consts.CODING_RATE, 
+                                consts.MAX_PACKET_SIZE, consts.BANDWIDTH)
+total_airtime_of_cycle = 0
+next_slot_time = []
+is_in_emergency = []
+start = round(time.time() * 1000)
+for i in consts.NUM_OF_NODES:
+  total_airtime_of_cycle += airtime
+  next_slot_time.append(start + airtime * (i + 1))
+  is_in_emergency.append(False)
+nodes_recieved = 0
+
+def analyze_data(id, data_str):
+    print(data_str)
+
 def handle_client_connection(client_socket):
+    # Recieve message
+    global nodes_recieved
     request = client_socket.recv(1024)
     request = request.decode('utf-8')
     print ("Received: ", request)
+    # Decode message
     (id, index, mac, JoinNonce, JoinEUI, DevNonce) = str(request).split(":")
-    # compute a DevAddr
     DevAddr = hex(random.getrandbits(32))[2:][:-1]
     text = "".join([str(DevAddr), str(mac)])
-    while (len(text) < 8):
-        text = "".join([text,"0"])
-    thash = hashlib.sha256()
-    thash.update(text.encode('utf-8'))
-    thash = thash.digest()
-    slot = (int(binascii.hexlify(thash), 16)) % S
-    while(slot != int(index)):
-        DevAddr = hex(random.getrandbits(32))[2:][:-1]
-        text = "".join([DevAddr, mac])
-        while (len(text) < 8):
-            text = "".join([text,"0"])
-        thash = hashlib.sha256()
-        thash.update(text.encode('utf-8'))
-        thash = thash.digest()
-        slot = (int(binascii.hexlify(thash), 16)) % S
-    # compute the AppSKey
-    AppKey = AK[int(id)-11]
-    text = "".join( [AppKey[:2], JoinNonce, JoinEUI, DevNonce] )
-    while (len(text) < 32):
-        text = "".join([text,"0"])
-    encryptor = AES.new(AppKey, AES.MODE_ECB)
-    AppSKey = encryptor.encrypt(binascii.unhexlify(text.encode('utf-8')))
-    msg = str(id)+":"+str(DevAddr)+":"
-    print("Responded: "+msg+"AppSKey")
-    client_socket.send( bytes(msg.encode('utf-8'))+AppSKey ) # AppSKey is already in bytes
+    time_of_receival = round(time.time() * 1000)
+    ack_pkg = ""
+    transmitter_id = 0
+    data_ind = 0
+    has_data = False
+    if (len(text) >= 3):
+        match text[1:2]:
+            case consts.CONNECTION_FLAG:
+                transmitter_id = nodes_recieved
+                nodes_recieved += 1
+            case consts.TRANSMISSION_FLAG:
+                transmitter_id = 0
+                index = 3
+                while text[index] >= '0' and text[index] <= '9':
+                    transmitter_id += 10 * transmitter_id + (text[index] - '0')
+                data_ind = index
+                has_data = True
+    slot_start = next_slot_time[transmitter_id]
+    while (slot_start < time_of_receival):
+        slot_start += total_airtime_of_cycle
+    delay = time_of_receival -  total_airtime_of_cycle
+    ack_pkg=consts.PACKAGE_FORMAT.format(flag=consts.RECIEVED_FLAG,
+                                                    id=transmitter_id,
+                                                    content=delay) 
+    client_socket.send(bytes(ack_pkg.encode('utf-8'))) 
+    if (has_data):
+        analyze_data(transmitter_id, text[data_ind:])
+
+    # while (len(text) < 8):
+    #     text = "".join([text,"0"])
+    # thash = hashlib.sha256()
+    # thash.update(text.encode('utf-8'))
+    # thash = thash.digest()
+    # slot = (int(binascii.hexlify(thash), 16)) % S
+    # while(slot != int(index)):
+    #     DevAddr = hex(random.getrandbits(32))[2:][:-1]
+    #     text = "".join([DevAddr, mac])
+    #     while (len(text) < 8):
+    #         text = "".join([text,"0"])
+    #     thash = hashlib.sha256()
+    #     thash.update(text.encode('utf-8'))
+    #     thash = thash.digest()
+    #     slot = (int(binascii.hexlify(thash), 16)) % S
+    # # compute the AppSKey
+    # AppKey = AK[int(id)-11]
+    # text = "".join( [AppKey[:2], JoinNonce, JoinEUI, DevNonce] )
+    # while (len(text) < 32):
+    #     text = "".join([text,"0"])
+    # encryptor = AES.new(AppKey, AES.MODE_ECB)
+    # AppSKey = encryptor.encrypt(binascii.unhexlify(text.encode('utf-8')))
+    # msg = str(id)+":"+str(DevAddr)+":"
+    client_socket.send(bytes(ack_pkg.encode('utf-8'))) 
+    print("Responded: "+ack_pkg+"AppSKey")
     client_socket.close()
 
 

@@ -445,7 +445,7 @@ DevNonce = 1
 lora_sock = socket.socket(socket.AF_LORA, socket.SOCK_RAW)
 
 # uncomment this line if you don't want OTA update and repeated experiments
-start_transmissions(1000)
+# start_transmissions(1000)
 
 # uncomment those lines if you do want OTA update and repeated experiments
 # lora.init(mode=LoRa.LORA, rx_iq=True, region=LoRa.EU868, frequency=freqs[0], power_mode=LoRa.ALWAYS_ON, bandwidth=LoRa.BW_125KHZ, sf=12)
