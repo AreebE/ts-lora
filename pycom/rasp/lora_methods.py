@@ -13,7 +13,7 @@ def airtime_calc(spreading_frequency,coding_rate,payload_size,bandwidth):
     Tsym = (2.0**spreading_frequency)/bandwidth
     Tpream = (Npream + 4.25)*Tsym
     payloadSymbNB = 8 + max(math.ceil(
-        (8.0*payload_size-4.0*spreading_frequency+28+16-20*H)
+        (8.0*payload_size-4.0*spreading_frequency+28+15*coding_rate-20*H)
         / (4.0*(spreading_frequency-2*DE)))*(coding_rate+4),0)
     Tpayload = payloadSymbNB * Tsym
     return Tpream + Tpayload

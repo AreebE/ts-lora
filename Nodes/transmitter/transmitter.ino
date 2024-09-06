@@ -190,6 +190,7 @@ void loop() {
   uint8_t len = sizeof(buf);
 
   Serial.println("Waiting for reply...");
+  // Maybe change?
   if (rf95.waitAvailableTimeout(1000)) {
     // Should be a reply message for us now
     if (rf95.recv(buf, &len)) {
