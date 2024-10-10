@@ -9,82 +9,17 @@
 /*
  * Added libaries:
  * * UUID
- * 
+ * * Regexp
  */
 #include <SPI.h>
 #include <RH_RF95.h>
 #include "UUID.h"
-
-// First 3 here are boards w/radio BUILT-IN. Boards using FeatherWing follow.
-//#if defined (__AVR_ATmega32U4__)  // Feather 32u4 w/Radio
-//  #define RFM95_CS    8
-//  #define RFM95_INT   7
-//  #define RFM95_RST   4
-//
-//#elif defined(ADAFRUIT_FEATHER_M0) || defined(ADAFRUIT_FEATHER_M0_EXPRESS) || defined(ARDUINO_SAMD_FEATHER_M0)  // Feather M0 w/Radio
-//  #define RFM95_CS    8
-//  #define RFM95_INT   3
-//  #define RFM95_RST   4
-//
-//#elif defined(ARDUINO_ADAFRUIT_FEATHER_RP2040_RFM)  // Feather RP2040 w/Radio
-//  #define RFM95_CS   16
-//  #define RFM95_INT  21
-//  #define RFM95_RST  17
-//
-//#elif defined (__AVR_ATmega328P__)  // Feather 328P w/wing
-//  #define RFM95_CS    4  //
-//  #define RFM95_INT   3  //
-//  #define RFM95_RST   2  // "A"
-//
-//#elif defined(ESP8266)  // ESP8266 feather w/wing
-//  #define RFM95_CS    2  // "E"
-//  #define RFM95_INT  15  // "B"
-//  #define RFM95_RST  16  // "D"
-//
-//#elif defined(ARDUINO_ADAFRUIT_FEATHER_ESP32S2) || defined(ARDUINO_NRF52840_FEATHER) || defined(ARDUINO_NRF52840_FEATHER_SENSE)
-//  #define RFM95_CS   10  // "B"
-//  #define RFM95_INT   9  // "A"
-//  #define RFM95_RST  11  // "C"
-//
-//#elif defined(ESP32)  // ESP32 feather w/wing
-//  #define RFM95_CS   33  // "B"
-//  #define RFM95_INT  27  // "A"
-//  #define RFM95_RST  13
-//
-//#elif defined(ARDUINO_NRF52832_FEATHER)  // nRF52832 feather w/wing
-//  #define RFM95_CS   11  // "B"
-//  #define RFM95_INT  31  // "C"
-//  #define RFM95_RST   7  // "A"
-//
-//#endif
-
-///* Some other possible setups include:
-//
-//// Feather 32u4:
-//#define RFM95_CS   8
-//#define RFM95_RST  4
-//#define RFM95_INT  7
+#include "transmitter.h"
 
 // Feather M0:
 #define RFM95_CS   8
 #define RFM95_RST  4
 #define RFM95_INT  3
-
-//// Arduino shield:
-//#define RFM95_CS  10
-//#define RFM95_RST  9
-//#define RFM95_INT  7
-
-//// Feather 32u4 w/wing:
-//#define RFM95_RST 11  // "A"
-//#define RFM95_CS  10  // "B"
-//#define RFM95_INT  2  // "SDA" (only SDA/SCL/RX/TX have IRQ!)
-//
-//// Feather m0 w/wing:
-//#define RFM95_RST 11  // "A"
-//#define RFM95_CS  10  // "B"
-//#define RFM95_INT  6  // "D"
-//*/
 
 // Change to 434.0 or other frequency, must match RX's freq!
 #define RF95_FREQ 434.0
@@ -92,17 +27,19 @@ int id = 0;
 int timeTilNext = 0;
 // Singleton instance of the radio driver
 RH_RF95 rf95(RFM95_CS, RFM95_INT);
+char message[MAX_PACKET_SIZE] = "";
 
 void setup() {
   
   pinMode(RFM95_RST, OUTPUT);
   digitalWrite(RFM95_RST, HIGH);
-
+  
   Serial.begin(115200);
   while (!Serial) delay(1);
   delay(100);
 
   Serial.println("Feather LoRa TX Test!");
+  randomSeed(analogRead(0));
 
   // manual reset
   digitalWrite(RFM95_RST, LOW);
@@ -124,32 +61,68 @@ void setup() {
   }
   Serial.print("Set Freq to: "); Serial.println(RF95_FREQ);
 
+  // Create message
+  // note: 16777216 in hexadecimal is '10000000'
+  long featherboard_identifier = random(16777216, 2147483647);
+  message[0] = '!';
+  message[1] = (char) SET_CONNECTION_FLAG;
+  message[2] = '/'; // no id yet
+  message[3] = BORDER_CHAR;
+  char[8] identifier_str = ['0','0','0','0','0','0','0','0'];
+  itoa(featherboard_identifier, message, 0);
+  for (int i = 0; i < 8; i++) {
+    message[4 + i] = identifier_str[i];
+  }
+  message[12] = '|';
+  
   // Set up connection
   bool idNotRecieved = true;
   while (idNotRecieved) {
-
-    rf95.send((uint8_t *) "!CO", 36);
+    
+    rf95.send((uint8_t *) message, 36);
     delay(10);
     rf95.waitPacketSent();
-    uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
+    uint8_t buf[MAX_PACKET_SIZE];
     uint8_t len = sizeof(buf);
   
     if (rf95.waitAvailableTimeout(1000)) {
-      if (rf95.recv(buf, &len)) {
-        int i = 3;
-        id = 0;
-        while (buf[i] != '|') {
-          id = id * 10 + (buf[i] - '0');
-          i++;
+      // A package was recieved, now waiting for id.
+      while (idNotRecieved) {
+        if (rf95.recv(buf, &len)) {
+          Serial.println((char *) buf);
+          char flag = (char) (buf[1]);
+          id = (char) buf[2];
+          int i = 4;
+          timeTilNext = 0;
+          while (buf[i] != BORDER_CHAR) {
+            timeTilNext = (timeTilNext * 10) + ((char) buf[i] - '0'); 
+            i++;
+          }
+          i += 2;
+          
+          long identifier = 0; // To determine if this transmitter has the right acknowledgement package
+          while (buf[i] != BORDER_CHAR) {
+            int val = 0;
+            if (buf[i] > 'a') {
+              val = buf[i] - 'a' + 10;
+            }
+            else {
+              val = buf[i] - '0';
+            }
+            identifier = identifier * 16 + val;
+            i++;
+          }
+          
+          if (identifier == featherboard_identifier) {
+            idNotRecieved=false;
+            break;
+          }
+          else {
+            rf95.waitPacketSent();
+          }
+        } else {
+          Serial.println("Receive failed");
         }
-        i++;
-        while (i < sizeof(buf)) {
-          timeTilNext = (timeTilNext * 10) + (buf[i] - '0'); 
-          i++;
-        }
-        idNotRecieved=false;
-      } else {
-        Serial.println("Receive failed");
       }
     } else {
       Serial.println("No reply, is there a listener around?");
@@ -162,6 +135,15 @@ void setup() {
   // If you are using RFM95/96/97/98 modules which uses the PA_BOOST transmitter pin, then
   // you can set transmitter powers from 5 to 23 dBm:
   rf95.setTxPower(23, false);
+
+  // Resetting the message
+  for (int i = 0; i < MAX_PACKET_SIZE; i++) {
+    message[i] = 0;
+  }
+  message[0] = '!';
+  message[1] = (char) TRANSMISSION_FLAG;
+  message[2] = (char) id;
+  message[3] = BORDER_CHAR;
 }
 
 int16_t packetnum = 0;  // packet counter, we increment per xmission
@@ -172,21 +154,20 @@ String collect_data() {
 
 void loop() {
   Serial.println("Transmitting..."); // Send a message to rf95_server
-  String data_message = "!TR" + String(id) + "|" + collect_data();
-  // itoa(packetnum++, data_message+13, 10);
-  Serial.print("Sending "); Serial.println(data_message);
-  data_message.setCharAt(data_message.length() - 1, 0);
-  Serial.println("Sending...");
+  String data_message = collect_data();
+  int i = 0;
+  for (; i < data_message.length(); i++) {
+    message[4 + i] = data_message[i];
+  }
+  message[i] = '|';
   
   delay(10);
-  char data_buffer[64] = {};
-  data_message.toCharArray(data_buffer, 64);
-  rf95.send((uint8_t *) data_buffer, 64);
+  rf95.send((uint8_t *) message, 64);
   Serial.println("Waiting for packet to complete...");
   delay(10);
   rf95.waitPacketSent();
   // Now wait for a reply
-  uint8_t buf[RH_RF95_MAX_MESSAGE_LEN];
+  uint8_t buf[MAX_PACKET_SIZE];
   uint8_t len = sizeof(buf);
 
   Serial.println("Waiting for reply...");
@@ -196,11 +177,11 @@ void loop() {
     if (rf95.recv(buf, &len)) {
       Serial.print("Got reply: ");
       int timeTilNext = 0;
-      int i = 3;
-      while (buf[i] != '|') {
-        i++;
+      int pkgID = (char) buf[3];
+      if (pkgID != id) {
+        return;
       }
-      i++;
+      int i = 4;
       while (i < sizeof(buf) && (buf[i] >= '0' && buf[i] <= '9')) {
         timeTilNext = (timeTilNext * 10) + (buf[i] - '0'); 
         i++;

@@ -11,3 +11,5 @@ print(92.4 - 88.32) # 32
 # Updated formula to properly include coding rate. Makes results closer to expected value, though some noteable differences.
 # Issue may be in how payload is calculated. Changing DE or H does not appear to meaningfully change results.
 # Formula also matches my notes after some updates.
+
+# +- 10%

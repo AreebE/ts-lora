@@ -1,35 +1,27 @@
 #!/usr/bin/python3
+# SPDX-FileCopyrightText: 2018 Brent Rubell for Adafruit Industries
+#
+# SPDX-License-Identifier: MIT
 
-import socket
-import threading
-import random
+"""
+Example for using the RFM69HCW Radio with Raspberry Pi.
+
+Learn Guide: https://learn.adafruit.com/lora-and-lorawan-for-raspberry-pi
+Author: Brent Rubell for Adafruit Industries
+"""
+# Import Python System Libraries
 import time
-import hashlib
-import binascii
+# Import Blinka Libraries
+import busio
+from digitalio import DigitalInOut, Direction, Pull
+import board
+# Import the SSD1306 module.
+import adafruit_ssd1306
+# Import RFM9x
+import adafruit_rfm9x
+
 import lora_consts as consts
 import lora_methods as lora
-import os
-from Crypto.Cipher import AES
-
-S = 1000
-bind_ip = '192.168.0.254'
-bind_port = 8000
-
-AK = ["3878214125442A472D4B615064536756","7234753778217A25432A462D4A614E64","576D5A7134743777217A24432646294A","655368566D5971337436773979244226",
-"4B6150645367566B5970337336763979","2A462D4A614E645267556B5870327335","7A24432646294A404E635266556A586E","36763979244226452948404D63516654",
-"703373367638792F423F4528482B4D62","556B58703273357638782F413F442847","635266556A586E327235753878214125","48404D635166546A576E5A7234753777",
-"3F4528482B4D6251655468576D5A7134","782F413F4428472B4B6250655368566D","35753778214125442A472D4B61506453","6E5A7234753777217A25432A462D4A61",
-"5468576D5A7134743677397A24432646","6250655368566D597133743676397924","472D4B6150645367566B597033733676","25432A462D4A614E645267556B587032",
-"77397A24432646294A404E635266556A","337336763979244226452948404D6351","6B59703373357638792F423F4528482B","5267556B58703273357538782F413F44",
-"404E635266556A586E32723475377821","452948404D635166546A576E5A723474","2F423F4528482B4D6251655468576D5A","7538782F413F4428472B4B6250655368",
-"5A7234753778214125442A472D4B6150","6A576E5A7134743777217A25432A462D","51655468576D5A7133743677397A2443","2B4B6250655368566D59713373367639",
-"442A472D4B6150645367566B59703373","217A25432A462D4A614E645267556B58","743677397A24432646294A404E635266","5970337336763979244226452948404D"]
-
-server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server.bind((bind_ip, bind_port))
-server.listen(5)  # max backlog of connections
-
-print("Listening on:", bind_ip, bind_port)
 
 airtime = lora.airtime_calc(consts.SPREADING_FREQUENCY, consts.CODING_RATE, 
                                 consts.MAX_PACKET_SIZE, consts.BANDWIDTH)
@@ -37,86 +29,99 @@ total_airtime_of_cycle = 0
 next_slot_time = []
 is_in_emergency = []
 start = round(time.time() * 1000)
-for i in consts.NUM_OF_NODES:
+for i in range(consts.NUM_OF_NODES):
   total_airtime_of_cycle += airtime
   next_slot_time.append(start + airtime * (i + 1))
   is_in_emergency.append(False)
 nodes_recieved = 0
 
+def get_delay(transmitter_id):
+    delay = next_slot_time[transmitter_id] - round(time.time() * 1000)
+    if (delay) < 0:
+        delay = 0
+    return delay
+
 def analyze_data(id, data_str):
     print(data_str)
 
-def handle_client_connection(client_socket):
-    # Recieve message
-    global nodes_recieved
-    request = client_socket.recv(1024)
-    request = request.decode('utf-8')
-    print ("Received: ", request)
-    # Decode message
-    (id, index, mac, JoinNonce, JoinEUI, DevNonce) = str(request).split(":")
-    DevAddr = hex(random.getrandbits(32))[2:][:-1]
-    text = "".join([str(DevAddr), str(mac)])
-    time_of_receival = round(time.time() * 1000)
-    ack_pkg = ""
-    transmitter_id = 0
-    data_ind = 0
-    has_data = False
-    if (len(text) >= 3):
-        match text[1:2]:
-            case consts.CONNECTION_FLAG:
-                transmitter_id = nodes_recieved
-                nodes_recieved += 1
-            case consts.TRANSMISSION_FLAG:
-                transmitter_id = 0
-                index = 3
-                while text[index] >= '0' and text[index] <= '9':
-                    transmitter_id += 10 * transmitter_id + (text[index] - '0')
-                data_ind = index
-                has_data = True
-    slot_start = next_slot_time[transmitter_id]
-    while (slot_start < time_of_receival):
-        slot_start += total_airtime_of_cycle
-    delay = time_of_receival -  total_airtime_of_cycle
-    ack_pkg=consts.PACKAGE_FORMAT.format(flag=consts.RECIEVED_FLAG,
-                                                    id=transmitter_id,
-                                                    content=delay) 
-    client_socket.send(bytes(ack_pkg.encode('utf-8'))) 
-    if (has_data):
-        analyze_data(transmitter_id, text[data_ind:])
+def process_package(package):
+    text = str(package, "utf-8")
+    transmitter_id = -1
+    ack_pkg = None
+    flag = 0
+    if (len(text) >= 2):
+        flag = text[1]
+        
+        if flag & consts.SET_CONNECTION_FLAG != 0:
+            global nodes_recieved
+            transmitter_id = nodes_recieved
+            nodes_recieved += 1
+            flag = consts.SEND_ID_FLAG
+            connecting_id = text[4:]
+            ack_pkg = consts.CONNECTION_PACKAGE_FORMAT.format(flag=chr(flag),
+                                    id=chr(transmitter_id),
+                                    delay=get_delay(transmitter_id),
+                                    connecting_id=connecting_id)
 
-    # while (len(text) < 8):
-    #     text = "".join([text,"0"])
-    # thash = hashlib.sha256()
-    # thash.update(text.encode('utf-8'))
-    # thash = thash.digest()
-    # slot = (int(binascii.hexlify(thash), 16)) % S
-    # while(slot != int(index)):
-    #     DevAddr = hex(random.getrandbits(32))[2:][:-1]
-    #     text = "".join([DevAddr, mac])
-    #     while (len(text) < 8):
-    #         text = "".join([text,"0"])
-    #     thash = hashlib.sha256()
-    #     thash.update(text.encode('utf-8'))
-    #     thash = thash.digest()
-    #     slot = (int(binascii.hexlify(thash), 16)) % S
-    # # compute the AppSKey
-    # AppKey = AK[int(id)-11]
-    # text = "".join( [AppKey[:2], JoinNonce, JoinEUI, DevNonce] )
-    # while (len(text) < 32):
-    #     text = "".join([text,"0"])
-    # encryptor = AES.new(AppKey, AES.MODE_ECB)
-    # AppSKey = encryptor.encrypt(binascii.unhexlify(text.encode('utf-8')))
-    # msg = str(id)+":"+str(DevAddr)+":"
-    client_socket.send(bytes(ack_pkg.encode('utf-8'))) 
-    print("Responded: "+ack_pkg+"AppSKey")
-    client_socket.close()
+        if flag & consts.TRANSMISSION_FLAG != 0:
+            transmitter_id = text[2]
+            data_start = 4
+            data_end = data_start + 1
+            while data_end < len(text) and text[data_end] != '-':
+                data_end += 1
+            data_end += 1
+            analyze_data(transmitter_id, text[data_start:data_end])
+            flag = consts.RECEIVED_FLAG
+    
+    if (ack_pkg == None):
+        ack_pkg = consts.ACKNOWLEDGEMENT_PACKAGE_FORMAT.format(flag=chr(flag),
+                                        id=chr(transmitter_id),
+                                        delay=get_delay(transmitter_id))
 
+    return ack_pkg
+
+# Create the I2C interface.
+i2c = busio.I2C(board.SCL, board.SDA)
+
+# 128x32 OLED Display
+reset_pin = DigitalInOut(board.D4)
+display = adafruit_ssd1306.SSD1306_I2C(128, 32, i2c, reset=reset_pin)
+# Clear the display.
+display.fill(0)
+display.show()
+width = display.width
+height = display.height
+
+# Configure LoRa Radio
+CS = DigitalInOut(board.CE1)
+RESET = DigitalInOut(board.D25)
+spi = busio.SPI(board.SCK, MOSI=board.MOSI, MISO=board.MISO)
+rfm9x = adafruit_rfm9x.RFM9x(spi, CS, RESET, 434.0)
+rfm9x.tx_power = 23
+prev_packet = None
 
 while True:
-    client_sock, address = server.accept()
-    print ("Accepted connection from: ", address[0], address[1])
-    client_handler = threading.Thread(
-        target=handle_client_connection,
-        args=(client_sock,)
-    )
-    client_handler.start()
+    packet = None
+    # draw a box to clear the image
+    display.fill(0)
+    display.text('RasPi LoRa', 35, 0, 1)
+
+    # check for packet rx
+    packet = rfm9x.receive()
+    if packet is None:
+        display.show()
+        display.text("Current Data: {prev}".format(prev=str(prev_packet, "utf-8")), 
+                    15, 20, 1)
+    else:
+        display.fill(0)
+        prev_packet = packet
+        packet_text = str(prev_packet, "utf-8")
+        print("New packet: ")
+        print(packet_text)
+        ack_pkg = bytes(process_package(package=packet), "utf-8")
+        rfm9x.send(ack_pkg)        
+        time.sleep(1)
+
+
+    display.show()
+    time.sleep(0.1)
