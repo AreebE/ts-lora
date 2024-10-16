@@ -28,6 +28,7 @@ int timeTilNext = 0;
 // Singleton instance of the radio driver
 RH_RF95 rf95(RFM95_CS, RFM95_INT);
 char message[MAX_PACKET_SIZE] = "";
+char *placeholder = (char *) malloc(sizeof(char) * 2);
 
 void setup() {
   
@@ -38,7 +39,6 @@ void setup() {
   while (!Serial) delay(1);
   delay(100);
 
-  Serial.println("Feather LoRa TX Test!");
   randomSeed(analogRead(0));
 
   // manual reset
@@ -65,15 +65,18 @@ void setup() {
   // note: 16777216 in hexadecimal is '10000000'
   long featherboard_identifier = random(16777216, 2147483647);
   message[0] = '!';
-  message[1] = (char) SET_CONNECTION_FLAG;
-  message[2] = '/'; // no id yet
-  message[3] = BORDER_CHAR;
-  char[8] identifier_str = ['0','0','0','0','0','0','0','0'];
-  itoa(featherboard_identifier, message, 0);
+  message[1] = '0';
+  message[2] = '1'; // Connection flag
+  message[3] = '/'; // no id yet
+  message[4] = '/';
+  message[5] = BORDER_CHAR;
+  char identifier_str[] = {'0','0','0','0','0','0','0','0'};
+  itoa(featherboard_identifier, identifier_str, 16);
+  
   for (int i = 0; i < 8; i++) {
-    message[4 + i] = identifier_str[i];
+    message[6 + i] = identifier_str[i];
   }
-  message[12] = '|';
+  message[14] = '|';
   
   // Set up connection
   bool idNotRecieved = true;
@@ -89,39 +92,48 @@ void setup() {
       // A package was recieved, now waiting for id.
       while (idNotRecieved) {
         if (rf95.recv(buf, &len)) {
-          Serial.println((char *) buf);
-          char flag = (char) (buf[1]);
-          id = (char) buf[2];
-          int i = 4;
+          char flag_sect[] = {(char) buf[1], (char) buf[2]};
+          char flag = (char) strtol(flag_sect, &placeholder, 16);
+          if (flag != SEND_ID_FLAG) {
+            continue;
+          }
+          
+          char id_sect[] = {(char) buf[3], (char) buf[4]};
+          id = strtol(id_sect, &placeholder, 16);
+          int i = 6;
           timeTilNext = 0;
           while (buf[i] != BORDER_CHAR) {
             timeTilNext = (timeTilNext * 10) + ((char) buf[i] - '0'); 
             i++;
           }
-          i += 2;
-          
-          long identifier = 0; // To determine if this transmitter has the right acknowledgement package
-          while (buf[i] != BORDER_CHAR) {
-            int val = 0;
-            if (buf[i] > 'a') {
-              val = buf[i] - 'a' + 10;
+          i++;
+  
+          bool isCorrectIdentifier = true;
+          int hexIndex = 0;
+          while (hexIndex < 8) {
+            if (buf[i + hexIndex] != identifier_str[hexIndex]) {
+              isCorrectIdentifier = false;
+              break;
             }
-            else {
-              val = buf[i] - '0';
-            }
-            identifier = identifier * 16 + val;
-            i++;
+            hexIndex++;
           }
-          
-          if (identifier == featherboard_identifier) {
+
+          if (isCorrectIdentifier) {
             idNotRecieved=false;
             break;
           }
           else {
             rf95.waitPacketSent();
+            if (!rf95.waitAvailableTimeout(1000)) {
+              continue;
+            }
           }
         } else {
-          Serial.println("Receive failed");
+          Serial.println("Receive failed at initializing.");
+          rf95.waitPacketSent();
+          if (!rf95.waitAvailableTimeout(1000)) {
+            continue;
+          }
         }
       }
     } else {
@@ -141,9 +153,14 @@ void setup() {
     message[i] = 0;
   }
   message[0] = '!';
-  message[1] = (char) TRANSMISSION_FLAG;
-  message[2] = (char) id;
-  message[3] = BORDER_CHAR;
+  message[1] = '0';
+  message[2] = '2'; // Transmission flag
+  message[3] = (char) (id / 16);
+  message[3] += (message[3] < 10) ? '0' : ('a' - 10);
+  message[4] = (char) (id % 16);
+  message[4] += (message[4] < 10) ? '0' : ('a' - 10);
+  message[5] = BORDER_CHAR;
+  Serial.println(message);
 }
 
 int16_t packetnum = 0;  // packet counter, we increment per xmission
@@ -157,9 +174,10 @@ void loop() {
   String data_message = collect_data();
   int i = 0;
   for (; i < data_message.length(); i++) {
-    message[4 + i] = data_message[i];
+    message[6 + i] = data_message[i];
   }
-  message[i] = '|';
+  message[i + 6] = '|';
+  Serial.println(message);
   
   delay(10);
   rf95.send((uint8_t *) message, 64);
@@ -174,26 +192,39 @@ void loop() {
   // Maybe change?
   if (rf95.waitAvailableTimeout(1000)) {
     // Should be a reply message for us now
-    if (rf95.recv(buf, &len)) {
-      Serial.print("Got reply: ");
-      int timeTilNext = 0;
-      int pkgID = (char) buf[3];
-      if (pkgID != id) {
-        return;
+    bool recievedAckPackage = false;
+    while (!recievedAckPackage) {
+      if (rf95.recv(buf, &len)) {
+        char flag_sect[] = {(char) buf[1], (char) buf[2]};
+        char flag = (char) strtol(flag_sect, &placeholder, 16);
+        if (flag != RECEIVED_FLAG) {
+          continue;
+        }
+        char id_sect[] = {(char) buf[3], (char) buf[4]};
+        int pkg_id = strtol(id_sect, &placeholder, 16);
+        if (pkg_id != id) {
+          continue;
+        }
+        int i = 6;
+        timeTilNext = 0;
+        while (buf[i] != BORDER_CHAR) {
+          timeTilNext = (timeTilNext * 10) + ((char) buf[i] - '0'); 
+          i++;
+        }
+        Serial.print("Got reply: ");
+        Serial.println((char*)buf);
+        Serial.print("Recieves next at: ");
+        Serial.println(timeTilNext);
+        Serial.print("RSSI: ");
+        Serial.println(rf95.lastRssi(), DEC);
+        delay(timeTilNext);
+      } else {
+        Serial.println("Receive failed.");
+        rf95.waitPacketSent();
+        if (!rf95.waitAvailableTimeout(1000)) {
+          break;
+        }
       }
-      int i = 4;
-      while (i < sizeof(buf) && (buf[i] >= '0' && buf[i] <= '9')) {
-        timeTilNext = (timeTilNext * 10) + (buf[i] - '0'); 
-        i++;
-      }
-      Serial.println((char*)buf);
-      Serial.print("Recieves next at: ");
-      Serial.println(timeTilNext);
-      Serial.print("RSSI: ");
-      Serial.println(rf95.lastRssi(), DEC);
-      delay(timeTilNext);
-    } else {
-      Serial.println("Receive failed");
     }
   } else {
     Serial.println("No reply, is there a listener around?");

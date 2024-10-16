@@ -23,22 +23,25 @@ import adafruit_rfm9x
 import lora_consts as consts
 import lora_methods as lora
 
-airtime = lora.airtime_calc(consts.SPREADING_FREQUENCY, consts.CODING_RATE, 
-                                consts.MAX_PACKET_SIZE, consts.BANDWIDTH)
+airtime = round(lora.airtime_calc(consts.SPREADING_FREQUENCY, consts.CODING_RATE, 
+                                consts.MAX_PACKET_SIZE, consts.BANDWIDTH) + consts.BASE_DELAY)
 total_airtime_of_cycle = 0
 next_slot_time = []
 is_in_emergency = []
 start = round(time.time() * 1000)
 for i in range(consts.NUM_OF_NODES):
   total_airtime_of_cycle += airtime
-  next_slot_time.append(start + airtime * (i + 1))
+  next_slot_time.append(round(start + airtime * (i + 1)))
   is_in_emergency.append(False)
 nodes_recieved = 0
+print(next_slot_time)
 
 def get_delay(transmitter_id):
-    delay = next_slot_time[transmitter_id] - round(time.time() * 1000)
-    if (delay) < 0:
-        delay = 0
+    current_time = round(time.time() * 1000)
+    while (next_slot_time[transmitter_id] < current_time):
+        next_slot_time[transmitter_id] += total_airtime_of_cycle
+    delay = next_slot_time[transmitter_id] - current_time
+    next_slot_time[transmitter_id] += total_airtime_of_cycle
     return delay
 
 def analyze_data(id, data_str):
@@ -50,32 +53,36 @@ def process_package(package):
     ack_pkg = None
     flag = 0
     if (len(text) >= 2):
-        flag = text[1]
+        flag = int(text[1:3], 16)
+        print(text[1:3])
+        print("Flag = " + str(flag))
         
-        if flag & consts.SET_CONNECTION_FLAG != 0:
+        if flag == consts.SET_CONNECTION_FLAG:
             global nodes_recieved
             transmitter_id = nodes_recieved
             nodes_recieved += 1
             flag = consts.SEND_ID_FLAG
-            connecting_id = text[4:]
-            ack_pkg = consts.CONNECTION_PACKAGE_FORMAT.format(flag=chr(flag),
-                                    id=chr(transmitter_id),
+            connecting_id = text[6:]
+            print(connecting_id)
+            ack_pkg = consts.CONNECTION_PACKAGE_FORMAT.format(flag=flag,
+                                    id=transmitter_id,
                                     delay=get_delay(transmitter_id),
                                     connecting_id=connecting_id)
 
-        if flag & consts.TRANSMISSION_FLAG != 0:
-            transmitter_id = text[2]
-            data_start = 4
+        if flag == consts.TRANSMISSION_FLAG:
+            transmitter_id = int(text[3:5], 16)
+            print("transmitter ID = " + str(transmitter_id))
+            data_start = 6
             data_end = data_start + 1
-            while data_end < len(text) and text[data_end] != '-':
+            while data_end < len(text) and text[data_end] != '|':
                 data_end += 1
             data_end += 1
             analyze_data(transmitter_id, text[data_start:data_end])
             flag = consts.RECEIVED_FLAG
     
     if (ack_pkg == None):
-        ack_pkg = consts.ACKNOWLEDGEMENT_PACKAGE_FORMAT.format(flag=chr(flag),
-                                        id=chr(transmitter_id),
+        ack_pkg = consts.ACKNOWLEDGEMENT_PACKAGE_FORMAT.format(flag=flag,
+                                        id=transmitter_id,
                                         delay=get_delay(transmitter_id))
 
     return ack_pkg
@@ -108,10 +115,14 @@ while True:
 
     # check for packet rx
     packet = rfm9x.receive()
+    print(packet)
     if packet is None:
         display.show()
-        display.text("Current Data: {prev}".format(prev=str(prev_packet, "utf-8")), 
-                    15, 20, 1)
+        if (prev_packet != None):
+            display.text("Current Data: {prev}".format(prev=str(prev_packet, "utf-8")), 
+                        15, 20, 1)
+        else:
+            display.text("Current Data: None", 15, 20, 1)
     else:
         display.fill(0)
         prev_packet = packet
